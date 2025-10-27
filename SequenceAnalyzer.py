@@ -317,10 +317,57 @@ def _analyze_value_dependency(seq: np.ndarray, max_order: int = 5) -> Dict[str, 
         "coeffs": best_coeffs
     }
 
+def _berlekamp_massey_algorithm(seq: np.ndarray) -> List[int]:
+    """
+    (Helper) Implements the Berlekamp-Massey algorithm to find the shortest
+    linear recurrence relation for a sequence.
+    Ideal for "pure" integer sequences. Handles large numbers using Python's
+    arbitrary-precision integers to prevent overflow.
+    
+    Returns the coefficients C(x) of the characteristic polynomial: c_0, c_1, ..., c_L.
+    The recurrence has the form: a(n) = -c_1*a(n-1) - c_2*a(n-2) - ...
+    """
+    n = len(seq)
+    # Use Python lists and standard integers to support arbitrary precision
+    s = [int(x) for x in seq]
+    C = [0] * (n + 1)
+    B = [0] * (n + 1)
+    C[0], B[0] = 1, 1
+    L, m = 0, 1
+    
+    for i in range(n):
+        # Calculate the discrepancy using arbitrary-precision arithmetic
+        d = s[i]
+        for j in range(1, L + 1):
+            d += C[j] * s[i - j]
+        
+        if d == 0:
+            m += 1
+        elif 2 * L <= i:
+            T = C[:] # Make a copy of the list
+            # Update C(x)
+            for j in range(m, n + 1):
+                # Ensure we don't go out of bounds on B during the update
+                if j - m < len(B):
+                    C[j] -= d * B[j - m]
+            L = i + 1 - L
+            B = T
+            m = 1
+        else:
+            # Update C(x)
+            for j in range(m, n + 1):
+                # Ensure we don't go out of bounds on B during the update
+                if j - m < len(B):
+                    C[j] -= d * B[j - m]
+            m += 1
+            
+    # Return the significant coefficients
+    return C[:L + 1]
+
 def dependency_model_analysis(seq: np.ndarray) -> Dict[str, Any]:
     """
     Defines the basic generation law, returning information about all candidate models.
-    Version 2.0: Returns a full candidate report for deeper analysis.
+    Version 2.3: Final fix for Berlekamp-Massey integration, ensuring no overflow.
     """
     seq_float64 = seq.astype(np.float64)
     if not np.all(np.isfinite(seq_float64)):
@@ -331,8 +378,8 @@ def dependency_model_analysis(seq: np.ndarray) -> Dict[str, Any]:
 
     variance = np.var(seq_float64)
     if variance < 1e-9: 
-        variance = 1.0 # Avoiding division by zero for constants
-    
+        variance = 1.0 # Avoid division by zero for constants
+
     idx_model = _analyze_index_dependency(seq_float64)
     val_model = _analyze_value_dependency(seq_float64)
     
@@ -354,14 +401,13 @@ def dependency_model_analysis(seq: np.ndarray) -> Dict[str, Any]:
         }
     }
     
-    # --- The logic of choosing the best model ---
+    # --- Logic for choosing the best model ---
     threshold = 0.05
     idx_is_good = idx_mse_ratio < threshold
     val_is_good = val_mse_ratio < threshold
 
     dependency_type = "stochastic_or_complex"
     if idx_is_good and val_is_good:
-        # If both models are good, we choose the better one. If they are very close, it's a 'mixed' model.
         if abs(idx_mse_ratio - val_mse_ratio) < 0.01:
             dependency_type = "mixed"
         else:
@@ -371,10 +417,44 @@ def dependency_model_analysis(seq: np.ndarray) -> Dict[str, Any]:
     elif val_is_good:
         dependency_type = "value_dependent"
 
+    # ===================================================================
+    # BLOCK: Berlekamp-Massey Algorithm Analysis
+    # ===================================================================
+    berlekamp_massey_result = {}
+
+    is_integer_like = np.allclose(seq_float64, np.round(seq_float64))
+    is_perfect_fit = val_mse_ratio < 1e-9 and val_model.get('order', 0) > 0
+
+    if is_integer_like and is_perfect_fit:
+        try:
+            # Pass the float64 array directly. The B-M function will handle conversion.
+            coeffs_poly = _berlekamp_massey_algorithm(seq_float64)
+            
+            if coeffs_poly and len(coeffs_poly) > 1:
+                order = len(coeffs_poly) - 1
+                recurrence_coeffs = [-c for c in coeffs_poly[1:]]
+                
+                terms = [f"{c}*a(n-{i+1})" for i, c in enumerate(recurrence_coeffs)]
+                terms = [t for t in terms if not t.startswith('0*')]
+                formula_str = " + ".join(terms).replace("+ -", "- ").replace("1*", "")
+
+                berlekamp_massey_result = {
+                    "model_type": "exact_linear_recurrence",
+                    "comment": "A perfect minimal linear recurrence was found using the Berlekamp-Massey algorithm.",
+                    "order": order,
+                    "coeffs": recurrence_coeffs,
+                    "formula_str": f"a(n) = {formula_str}"
+                }
+                dependency_type = "value_dependent (exact)"
+
+        except Exception as e:
+            berlekamp_massey_result = {"error": f"Berlekamp-Massey analysis failed: {e}"}
+
     result = {
         "dependency_type": dependency_type,
-        "best_model": candidates.get(dependency_type) if dependency_type in candidates else {"type": "none"},
-        "model_candidates": candidates # <-- IMPORTANT: Add all candidates to the report
+        "best_model": candidates.get(dependency_type.split(" ")[0]) if dependency_type in candidates else {"type": "none"},
+        "model_candidates": candidates,
+        "berlekamp_massey_analysis": berlekamp_massey_result
     }
     
     return result
@@ -524,15 +604,21 @@ def structural_breaks(seq: np.ndarray, model: str = "Pelt", num_breaks: int = 5)
 # 9. ANOMALIES
 # ===================================================================
 def anomalies(seq: np.ndarray, value_k: float = 3.5, shape_k: float = 4.0) -> Dict[str, Any]:
-    """Analyzes anomalies in values ​​and shapes, adapting to monotonous series."""
+    """Analyzes anomalies in values and shapes, adapting to monotonous series."""
     if len(seq) < 4: return {"outliers_idx": [], "shape_anomalies_idx": [], "num_anomalies": 0}
     
-    # For monotonic positive series, we use the logarithm,
-    # to find deviations from the multiplicative trend, not the trend itself.
-    is_monotonic_positive = (np.all(np.diff(seq) >= 0) or np.all(np.diff(seq) <= 0)) and np.min(seq) > 0
+    # For "mostly" monotonic positive series, use a logarithm to find deviations
+    # from the multiplicative trend, not the trend itself. This stabilizes variance.
+    diffs_for_check = np.diff(seq)
+    is_mostly_monotonic = False
+    if len(diffs_for_check) > 0:
+        is_mostly_monotonic = (np.sum(diffs_for_check >= 0) / len(diffs_for_check) > 0.8 or 
+                               np.sum(diffs_for_check <= 0) / len(diffs_for_check) > 0.8)
+
+    is_monotonic_positive = is_mostly_monotonic and np.min(seq) > 0
     
     data_for_value_analysis = seq
-    if is_monotonic_positive and len(seq) > 10:
+    if is_monotonic_positive and len(seq) > 10 and np.all(seq > 0): # Check that all values are positive for log
         try:
             data_for_value_analysis = np.log(seq)
         except (RuntimeWarning, FloatingPointError):
@@ -542,11 +628,23 @@ def anomalies(seq: np.ndarray, value_k: float = 3.5, shape_k: float = 4.0) -> Di
     mad = 1e-9 if mad == 0 else mad
     outliers_idx = np.where(np.abs(0.6745 * (data_for_value_analysis - median) / mad) > value_k)[0]
 
-    # The analysis of shape (sharp breaks) is always carried out on the original data
-    second_diffs = np.diff(np.diff(seq))
-    median_sd, mad_sd = np.median(second_diffs), np.median(np.abs(second_diffs - np.median(second_diffs)))
-    mad_sd = 1e-9 if mad_sd == 0 else mad_sd
-    shape_anomalies_idx = np.where(np.abs(0.6745 * (second_diffs - median_sd) / mad_sd) > shape_k)[0] + 1
+    # The analysis of shape (sharp breaks) is always carried out on the original data,
+    # but for exponential series, it's better to analyze the diff of the log.
+    data_for_shape_analysis = np.diff(seq)
+    if is_monotonic_positive and len(seq) > 10 and np.all(seq > 0):
+        try:
+            # For exponential series, log-differences are more stable
+            data_for_shape_analysis = np.diff(np.log(seq))
+        except (RuntimeWarning, FloatingPointError):
+            pass
+
+    second_diffs = np.diff(data_for_shape_analysis)
+    if len(second_diffs) == 0:
+        shape_anomalies_idx = np.array([])
+    else:
+        median_sd, mad_sd = np.median(second_diffs), np.median(np.abs(second_diffs - np.median(second_diffs)))
+        mad_sd = 1e-9 if mad_sd == 0 else mad_sd
+        shape_anomalies_idx = np.where(np.abs(0.6745 * (second_diffs - median_sd) / mad_sd) > shape_k)[0] + 1
     
     all_anomalies_idx = sorted(list(set(outliers_idx.tolist() + shape_anomalies_idx.tolist())))
     return {"outliers_idx": outliers_idx.tolist(), "shape_anomalies_idx": shape_anomalies_idx.tolist(), "all_anomalies_idx": all_anomalies_idx, "num_anomalies": len(all_anomalies_idx)}
@@ -2097,9 +2195,9 @@ if __name__ == "__main__":
     #sequence = [0, 1, 4, 9, 16, 25, 36, 49, 64, 81, 100, 121, 144, 169, 196, 225, 256, 289, 324, 361, 400, 441, 484, 529, 576, 625, 676] # A000290 The squares: a(n) = n^2.
     #sequence = [0, 1, 5, 19, 65, 211, 665, 2059, 6305, 19171, 58025, 175099, 527345, 1586131, 4766585, 14316139, 42981185, 129009091, 387158345, 1161737179, 3485735825, 10458256051] # A001047 a(n) = 3^n - 2^n.
     #sequence = [1, 1, 2, 5, 14, 42, 132, 429, 1430, 4862, 16796, 58786, 208012, 742900, 2674440, 9694845, 35357670, 129644790, 477638700] # A000108 Catalan numbers: C(n) = binomial(2n,n)/(n+1) = (2n)!/(n!(n+1)!).
-    sequence = [1, 6, 90, 1680, 34650, 756756, 17153136, 399072960, 9465511770, 227873431500, 5550996791340, 136526995463040, 3384731762521200, 84478098072866400, 2120572665910728000, 53494979785374631680, 1355345464406015082330] # A006480 De Bruijn's S(3,n): (3n)!/(n!)^3.
+    #sequence = [1, 6, 90, 1680, 34650, 756756, 17153136, 399072960, 9465511770, 227873431500, 5550996791340, 136526995463040, 3384731762521200, 84478098072866400, 2120572665910728000, 53494979785374631680, 1355345464406015082330] # A006480 De Bruijn's S(3,n): (3n)!/(n!)^3.
     #sequence = [1, 0, 1, 0, 2, 0, 5, 0, 14, 0, 42, 0, 132, 0, 429, 0, 1430, 0, 4862, 0, 16796, 0, 58786, 0, 208012, 0, 742900, 0, 2674440, 0, 9694845, 0, 35357670] # A126120 Catalan numbers (A000108) interpolated with 0's.
-
+    sequence = [2, 1, 3, 4, 7, 11, 18, 29, 47, 76, 123, 199, 322] # A000032 Lucas numbers beginning at 2: L(n) = L(n-1) + L(n-2), L(0) = 2, L(1) = 1.
     try:
         # Check that the input is an iterable and not a single number
         if not hasattr(sequence, '__iter__'):
@@ -2131,5 +2229,4 @@ if __name__ == "__main__":
     except Exception as e:
         print("\n--- A CRITICAL ERROR OCCURRED ---")
         print(f"Error: {e}")
-
         print("Check the correctness of the input sequence.")
