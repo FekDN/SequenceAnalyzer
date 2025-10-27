@@ -317,57 +317,11 @@ def _analyze_value_dependency(seq: np.ndarray, max_order: int = 5) -> Dict[str, 
         "coeffs": best_coeffs
     }
 
-def _berlekamp_massey_algorithm(seq: np.ndarray) -> List[int]:
-    """
-    (Helper) Implements the Berlekamp-Massey algorithm to find the shortest
-    linear recurrence relation for a sequence.
-    Ideal for "pure" integer sequences. Handles large numbers using Python's
-    arbitrary-precision integers to prevent overflow.
-    
-    Returns the coefficients C(x) of the characteristic polynomial: c_0, c_1, ..., c_L.
-    The recurrence has the form: a(n) = -c_1*a(n-1) - c_2*a(n-2) - ...
-    """
-    n = len(seq)
-    # Use Python lists and standard integers to support arbitrary precision
-    s = [int(x) for x in seq]
-    C = [0] * (n + 1)
-    B = [0] * (n + 1)
-    C[0], B[0] = 1, 1
-    L, m = 0, 1
-    
-    for i in range(n):
-        # Calculate the discrepancy using arbitrary-precision arithmetic
-        d = s[i]
-        for j in range(1, L + 1):
-            d += C[j] * s[i - j]
-        
-        if d == 0:
-            m += 1
-        elif 2 * L <= i:
-            T = C[:] # Make a copy of the list
-            # Update C(x)
-            for j in range(m, n + 1):
-                # Ensure we don't go out of bounds on B during the update
-                if j - m < len(B):
-                    C[j] -= d * B[j - m]
-            L = i + 1 - L
-            B = T
-            m = 1
-        else:
-            # Update C(x)
-            for j in range(m, n + 1):
-                # Ensure we don't go out of bounds on B during the update
-                if j - m < len(B):
-                    C[j] -= d * B[j - m]
-            m += 1
-            
-    # Return the significant coefficients
-    return C[:L + 1]
-
 def dependency_model_analysis(seq: np.ndarray) -> Dict[str, Any]:
     """
     Defines the basic generation law, returning information about all candidate models.
-    Version 2.3: Final fix for Berlekamp-Massey integration, ensuring no overflow.
+    Replaced Berlekamp-Massey with a more robust exact recurrence detection
+    based on the high-precision AR model results.
     """
     seq_float64 = seq.astype(np.float64)
     if not np.all(np.isfinite(seq_float64)):
@@ -418,41 +372,55 @@ def dependency_model_analysis(seq: np.ndarray) -> Dict[str, Any]:
         dependency_type = "value_dependent"
 
     # ===================================================================
-    # BLOCK: Berlekamp-Massey Algorithm Analysis
+    # BLOCK: Exact Recurrence Analysis (Replaces Berlekamp-Massey)
     # ===================================================================
     berlekamp_massey_result = {}
 
     is_integer_like = np.allclose(seq_float64, np.round(seq_float64))
-    is_perfect_fit = val_mse_ratio < 1e-9 and val_model.get('order', 0) > 0
+    # A perfect fit is an MSE extremely close to zero relative to the sequence's variance.
+    is_perfect_fit = val_mse_ratio < 1e-12 and val_model.get('order', 0) > 0
 
+    # If the standard AR model finds a near-perfect fit for an integer-like sequence,
+    # we treat it as an exact integer recurrence and present it clearly.
     if is_integer_like and is_perfect_fit:
         try:
-            # Pass the float64 array directly. The B-M function will handle conversion.
-            coeffs_poly = _berlekamp_massey_algorithm(seq_float64)
+            order = val_model['order']
+            # AR coeffs from lstsq are [c1, c2, ..., cp, const]. We want the recurrence coeffs.
+            # Round them to the nearest integer as they should be exact.
+            float_coeffs = val_model['coeffs'][:-1] # Exclude the constant term
+            recurrence_coeffs = [int(round(c)) for c in float_coeffs]
             
-            if coeffs_poly and len(coeffs_poly) > 1:
-                order = len(coeffs_poly) - 1
-                recurrence_coeffs = [-c for c in coeffs_poly[1:]]
-                
-                terms = [f"{c}*a(n-{i+1})" for i, c in enumerate(recurrence_coeffs)]
-                terms = [t for t in terms if not t.startswith('0*')]
-                formula_str = " + ".join(terms).replace("+ -", "- ").replace("1*", "")
+            # Check for trivial case (e.g., all zero coefficients)
+            if any(recurrence_coeffs):
+                terms = []
+                for i, c in enumerate(recurrence_coeffs):
+                    if c == 0: continue
+                    
+                    term = f"a(n-{i+1})"
+                    if c == -1:
+                        terms.append(f"- {term}")
+                    elif c == 1:
+                        terms.append(f"+ {term}")
+                    else:
+                        terms.append(f"{c:+}*{term}")
+
+                formula_str = " ".join(terms).lstrip('+ ')
 
                 berlekamp_massey_result = {
                     "model_type": "exact_linear_recurrence",
-                    "comment": "A perfect minimal linear recurrence was found using the Berlekamp-Massey algorithm.",
+                    "comment": "An exact integer linear recurrence was inferred from the high-precision autoregressive model.",
                     "order": order,
                     "coeffs": recurrence_coeffs,
                     "formula_str": f"a(n) = {formula_str}"
                 }
                 dependency_type = "value_dependent (exact)"
-
         except Exception as e:
-            berlekamp_massey_result = {"error": f"Berlekamp-Massey analysis failed: {e}"}
+            berlekamp_massey_result = {"error": f"Exact recurrence analysis failed: {e}"}
 
+    best_model_key = dependency_type.split(" ")[0]
     result = {
         "dependency_type": dependency_type,
-        "best_model": candidates.get(dependency_type.split(" ")[0]) if dependency_type in candidates else {"type": "none"},
+        "best_model": candidates.get(best_model_key, {"type": "none"}),
         "model_candidates": candidates,
         "berlekamp_massey_analysis": berlekamp_massey_result
     }
@@ -519,7 +487,7 @@ def stationarity(seq: np.ndarray) -> Dict[str, Any]:
     try:
         # For ADF, 'ct' tests for stationarity around the deterministic trend.
         adf_p = adfuller(seq, regression='ct')[1]
-        adf_stationary = adp_f < 0.05
+        adf_stationary = adf_p < 0.05
     except Exception:
         try: # Fallback to 'c' if 'ct' causes an error (e.g. on constant data)
             adf_p = adfuller(seq, regression='c')[1]
@@ -927,11 +895,20 @@ def spectral_analysis(seq: np.ndarray) -> Dict[str, Any]:
 # ===================================================================
 def classify_pattern(meta: Dict[str, Any], seq: np.ndarray) -> str:
     """Assigns a class to a sequence based on the entire set of metaparameters."""
-    if len(seq) < 20:
-        return "Indeterminate (Too Short)"
-        
     try:
         dm = meta.get('dependency_model', {})
+        
+        # --- PRIORITIZED CHECK FOR EXACT RECURRENCE ---
+        # This check must come before the length check to correctly classify short, exact sequences.
+        if dm.get('dependency_type') == 'value_dependent (exact)':
+            bma_analysis = dm.get('berlekamp_massey_analysis', {})
+            if bma_analysis and 'formula_str' in bma_analysis:
+                return f"Exact Linear Recurrence: {bma_analysis['formula_str']}"
+        
+        # --- Standard length check for all other, less certain patterns ---
+        if len(seq) < 20:
+            return "Indeterminate (Too Short)"
+            
         cyc = meta.get('cyclicity_and_seasonality', {})
         st = meta.get('stationarity', {})
         nfa = meta.get('nonlinear_fractal_analysis', {})
@@ -940,20 +917,21 @@ def classify_pattern(meta: Dict[str, Any], seq: np.ndarray) -> str:
             return f"Strongly Cyclic (T={cyc.get('dominant_period')})"
         
         dep_type = dm.get('dependency_type')
-        best_model = dm.get('best_model', {})
+        # The best_model can now be directly under dependency_model for exact types
+        best_model = dm.get('best_model', {}) if dm.get('best_model') else dm
 
         # Provide a more detailed description for value-dependent models.
-        if dep_type == "value_dependent":
+        if 'value_dependent' in dep_type: # Catches both 'value_dependent' and 'value_dependent (exact)'
             order = best_model.get('order', 0)
-            coeffs = best_model.get('coeffs', [])
-            if order > 0 and coeffs:
-                # Removing the constant from the coefficients for recurrence analysis
-                ar_coeffs = coeffs[:-1]
-                # Let's create a beautiful recurrence string
-                terms = [f"{c:+.2f}*a(n-{i+1})" for i, c in enumerate(ar_coeffs)]
-                recurrence_str = " ".join(terms).lstrip("+ ")
-                return f"Linear Recurrence (Order {order}): a(n) ≈ {recurrence_str}"
-            return f"Autoregressive (Order {order})"
+            if order > 0:
+                coeffs = best_model.get('coeffs', [])
+                # For approximate models, show the floating point equation
+                if coeffs and dep_type != 'value_dependent (exact)':
+                    ar_coeffs = coeffs[:-1]
+                    terms = [f"{c:+.2f}*a(n-{i+1})" for i, c in enumerate(ar_coeffs)]
+                    recurrence_str = " ".join(terms).lstrip("+ ")
+                    return f"Linear Recurrence (Order {order}): a(n) ≈ {recurrence_str}"
+                return f"Autoregressive (Order {order})"
 
         if dep_type == "index_dependent" and best_model.get('type') == 'exponential':
             growth_rate = best_model.get('params', {}).get('b', 0)
@@ -1922,7 +1900,7 @@ def interpret_analysis_results(meta: Dict[str, Any], sequence_is_integer_like: b
     """
     Interprets the raw report from analyze_sequence_full, combining metrics
     to obtain high-level conclusions about the nature of the sequence.
-    Version 2.3: Fixed 'get_val' error and the logic for gathering conclusions.
+    Version 2.5: Improved commentary logic to explain the link between recurrence and exponential behavior.
 
     Args:
         meta: Dictionary with results from analyze_sequence_full.
@@ -1994,13 +1972,15 @@ def interpret_analysis_results(meta: Dict[str, Any], sequence_is_integer_like: b
     # --- 1.2 Linear Recurrence ---
     score_recurrence = 0
     details_recurrence = []
-    if get_val('dependency_model.dependency_type') == 'value_dependent':
+    if 'value_dependent' in get_val('dependency_model.dependency_type', ''):
         model = get_val('dependency_model.best_model', {})
         mse_ratio = model.get('performance', {}).get('mse_ratio', 1.0)
         order = model.get('order', 0)
         
         if order > 0 and mse_ratio < 0.01:
             score_recurrence += 2
+            
+            # General case: approximate recurrence
             coeffs = model.get('coeffs', [])
             if coeffs:
                 ar_coeffs = coeffs[:-1]
@@ -2010,24 +1990,40 @@ def interpret_analysis_results(meta: Dict[str, Any], sequence_is_integer_like: b
                 if abs(const) > 1e-5: eq_str += f" {const:+.3f}"
                 details_recurrence.append(f"Detected an AR({order}) model with high precision (MSE ratio: {mse_ratio:.4f}). Equation: a(n) ≈ {eq_str}.")
                 
-                try:
-                    roots = np.roots([1] + [-c for c in ar_coeffs])
-                    abs_roots = np.abs(roots)
-                    details_recurrence.append(f"Roots of the characteristic polynomial: {[f'{r:.2f}' for r in roots]}.")
-                    if np.any(abs_roots > 1.01): details_recurrence.append("Behavior: Unstable growth/decay (there are roots > 1 in magnitude).")
-                    elif np.any(np.isclose(abs_roots, 1.0)): details_recurrence.append("Behavior: Polynomial growth or oscillations (there are roots ≈ 1 in magnitude).")
-                    else: details_recurrence.append("Behavior: Damped (all roots < 1 in magnitude).")
-                except Exception: pass
+            # Specific case: exact recurrence (BOOST SCORE and refine details)
+            if get_val('dependency_model.dependency_type') == 'value_dependent (exact)':
+                score_recurrence += 6 # Huge score boost
+                bma = get_val('dependency_model.berlekamp_massey_analysis', {})
+                if bma.get('formula_str'):
+                    # Overwrite the approximate formula with the clean, exact one.
+                    details_recurrence = [f"An exact integer linear recurrence was found: {bma['formula_str']}."]
+            
+            # Add analysis of roots for both cases
+            try:
+                # Use the clean integer coeffs if available, otherwise the float coeffs
+                clean_coeffs = get_val('dependency_model.berlekamp_massey_analysis.coeffs')
+                if clean_coeffs:
+                    # BM coeffs are for C(x), need to flip sign for recurrence a(n) = ...
+                    roots = np.roots([1] + [-c for c in clean_coeffs])
+                else:
+                    roots = np.roots([1] + [-c for c in model.get('coeffs', [])[:-1]])
+                
+                abs_roots = np.abs(roots)
+                details_recurrence.append(f"Roots of the characteristic polynomial: {[f'{r:.2f}' for r in roots]}.")
+                if np.any(abs_roots > 1.01): details_recurrence.append("Behavior: Unstable growth/decay (there are roots > 1 in magnitude).")
+                elif np.any(np.isclose(abs_roots, 1.0)): details_recurrence.append("Behavior: Polynomial growth or oscillations (there are roots ≈ 1 in magnitude).")
+                else: details_recurrence.append("Behavior: Damped (all roots < 1 in magnitude).")
+            except Exception: pass
     
     if score_recurrence > 0:
-        conclusions.append({"property": "Linear Recurrence", "score": score_recurrence, "details": details_recurrence})
+        prop_name = "Exact Linear Recurrence" if get_val('dependency_model.dependency_type') == 'value_dependent (exact)' else "Linear Recurrence"
+        conclusions.append({"property": prop_name, "score": score_recurrence, "details": details_recurrence})
 
     # --- 1.3 Exponential Growth/Decay ---
     score_expo = 0
     details_expo = []
-    best_idx_model = get_val('dependency_model.best_model', {})
-    if get_val('dependency_model.dependency_type') == 'mixed':
-        best_idx_model = get_val('dependency_model.best_model.index_dependent', {})
+    idx_model_path = 'dependency_model.best_model' if get_val('dependency_model.dependency_type') == 'index_dependent' else 'dependency_model.model_candidates.index_dependent'
+    best_idx_model = get_val(idx_model_path, {})
         
     if best_idx_model.get('type') == 'exponential' and best_idx_model.get('performance', {}).get('mse_ratio', 1.0) < 0.05:
         score_expo += 2
@@ -2037,12 +2033,12 @@ def interpret_analysis_results(meta: Dict[str, Any], sequence_is_integer_like: b
     if get_val('local_dynamics.operator_type') == 'multiplicative' and get_val('local_dynamics.pattern_type') == 'monotonic':
         score_expo += 1; details_expo.append("Local dynamics are monotonic and have a multiplicative character.")
     
-    if get_val('entropy_analysis.sample_entropy', 1.0) < 0.1:
-        score_expo += 1; details_expo.append(f"Very low sample entropy ({get_val('entropy_analysis.sample_entropy', 0):.3f}) indicates high predictability.")
+    sample_entropy = get_val('entropy_analysis.sample_entropy')
+    if sample_entropy is not None and sample_entropy < 0.1:
+        score_expo += 1; details_expo.append(f"Very low sample entropy ({sample_entropy:.3f}) indicates high predictability.")
     
     num_anomalies = get_val('anomalies.num_anomalies', 0)
-    # Use len(seq) from meta itself, if available, for accuracy
-    seq_len = get_val('sequence_length', len(meta.get('value_bounds', {}).get('bounds', [0,0])))
+    seq_len = get_val('sequence_length', 1) 
     
     if seq_len > 0 and num_anomalies > seq_len / 4 and get_val('local_dynamics.pattern_type') == 'monotonic':
          score_expo += 1; details_expo.append("The detection of anomalies at the end of the series is an artifact confirming accelerating growth.")
@@ -2055,11 +2051,14 @@ def interpret_analysis_results(meta: Dict[str, Any], sequence_is_integer_like: b
     details_mono = []
     if get_val('local_dynamics.pattern_type') == 'monotonic':
         score_mono += 1; details_mono.append("Local dynamics are monotonic (the series is consistently increasing or decreasing).")
-        if get_val('dependency_model.best_model.type') in ['linear', 'quadratic', 'cubic']:
-             score_mono += 2; details_mono.append(f"A good approximation by a polynomial function was found (type: {get_val('dependency_model.best_model.type')}).")
+        if get_val(idx_model_path + '.type') in ['linear', 'quadratic', 'cubic']:
+             score_mono += 2; details_mono.append(f"A good approximation by a polynomial function was found (type: {get_val(idx_model_path + '.type')}).")
         if get_val('stationarity.conclusion') and 'Non-stationary' in get_val('stationarity.conclusion'):
              score_mono += 1; details_mono.append("Stationarity tests confirm the presence of a trend.")
-        if get_val('volatility.rolling_std_of_diffs') is not None and get_val('local_dynamics.diff_variance') is not None and get_val('volatility.rolling_std_of_diffs')**2 < get_val('local_dynamics.diff_variance'):
+        
+        rolling_std = get_val('volatility.rolling_std_of_diffs')
+        diff_var = get_val('local_dynamics.diff_variance')
+        if rolling_std is not None and diff_var is not None and (rolling_std**2) < diff_var:
              score_mono += 1; details_mono.append("Low volatility of differences indicates a smooth trend.")
     
     if score_mono > 0:
@@ -2104,7 +2103,8 @@ def interpret_analysis_results(meta: Dict[str, Any], sequence_is_integer_like: b
     else:
         details_stochastic.append("Comment: The 'nolds' library is not available, analysis of chaos and fractal properties is limited.")
     
-    if get_val('entropy_analysis.sample_entropy', 0) > 0.5: score_stochastic += 1; details_stochastic.append("High sample entropy indicates low predictability.")
+    sample_entropy = get_val('entropy_analysis.sample_entropy')
+    if sample_entropy is not None and sample_entropy > 0.5: score_stochastic += 1; details_stochastic.append("High sample entropy indicates low predictability.")
         
     if score_stochastic > 0:
         prop_name = "Chaotic Dynamics" if lyap_exp and lyap_exp > 0.05 else "Stochastic/Complex Process"
@@ -2154,6 +2154,10 @@ def interpret_analysis_results(meta: Dict[str, Any], sequence_is_integer_like: b
 
     # --- Contextual commentary and conflict resolution ---
     props = {c['property'] for c in conclusions}
+    # Use a more flexible check to catch both "Linear Recurrence" and "Exact Linear Recurrence"
+    has_recurrence = any("Linear Recurrence" in p for p in props)
+    has_exponential = "Exponential Growth/Decay" in props
+
     if "Hybrid Cyclic Model" in props and primary['property'] == "Hybrid Cyclic Model":
          commentary += (
             "COMMENTARY: The detection of a precise hybrid model is the strongest result. "
@@ -2161,7 +2165,7 @@ def interpret_analysis_results(meta: Dict[str, Any], sequence_is_integer_like: b
             "good, but not perfect, results—they were merely approximating this complex cyclical behavior."
         )
 
-    if "Exponential Growth/Decay" in props and primary['property'] == "Exponential Growth/Decay":
+    if has_exponential and primary.get('property', '').startswith("Exponential"):
         commentary += (
             "\nCOMMENTARY: All key metrics point to a dominant exponential trend. "
             "The failures of segmentation methods (HMM, Clustering) are expected, "
@@ -2169,11 +2173,11 @@ def interpret_analysis_results(meta: Dict[str, Any], sequence_is_integer_like: b
             "'overwhelms' more subtle structural features."
         )
         
-    if "Linear Recurrence" in props and "Exponential Growth/Decay" in props:
+    if has_recurrence and has_exponential:
         commentary += (
             "\nCOMMENTARY: Signs of both linear recurrence and exponential growth have been detected. "
             "This is typical for recurrences whose characteristic equation has a root with a magnitude greater than 1. "
-            "The recurrence relation is a more precise and fundamental description."
+            "The recurrence relation is a more precise and fundamental description of the sequence's law of generation."
         )
 
     return {
