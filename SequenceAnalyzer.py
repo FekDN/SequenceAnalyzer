@@ -1,3 +1,4 @@
+# Copyright (c) 2025  Feklin Dmitry (FeklinDN@gmail.com)
 import os
 os.environ['SCIPY_ARRAY_API'] = '1'
 import numpy as np
@@ -2130,4 +2131,5 @@ if __name__ == "__main__":
     except Exception as e:
         print("\n--- A CRITICAL ERROR OCCURRED ---")
         print(f"Error: {e}")
+
         print("Check the correctness of the input sequence.")
