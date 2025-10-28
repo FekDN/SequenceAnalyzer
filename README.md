@@ -20,36 +20,42 @@ For full functionality, install all dependencies with a single command:
 pip install numpy scipy statsmodels PyWavelets ruptures nolds stumpy hmmlearn scikit-learn arch pyts EMD-signal tslearn
 ```
 
-## 26+ Analysis Types
+---
 
-1.  **Local Dynamics:** Analysis of transitions between adjacent elements.
-2.  **Dependency Model:** Finds if a value depends on its index (`f(n)`) or on previous values (autoregression).
-3.  **Value Bounds:** Finds the minimum and maximum values.
-4.  **Cyclicity:** Searches for repeating patterns and determines their period.
+### 31+ Analysis Types
+
+1.  **Local Dynamics:** Analysis of transitions between adjacent elements (velocity, acceleration, jerk).
+2.  **Dependency Model:** Determines if a value depends on its index (`y = f(n)`) or on previous values (autoregression, `y(n) = f(y(n-1), ...)`).
+3.  **Value Bounds:** Finds the minimum and maximum values of the sequence.
+4.  **Cyclicity & Seasonality:** Searches for repeating patterns using autocorrelation and determines their period and strength.
 5.  **Statistical Moments:** Calculates mean, variance, skewness, and kurtosis.
-6.  **Stationarity:** Checks if statistical properties are constant over time.
-7.  **Autocorrelation and Memory:** Measures how much the current value depends on past values.
-8.  **Structural Breaks:** Detects points where the sequence's behavior changes abruptly.
-9.  **Anomalies:** Finds outliers and sharp structural breaks.
-10. **Entropy:** Measures the complexity and predictability of the sequence.
-11. **Stream Structure:** Checks for interleaved, independent subsequences.
+6.  **Stationarity:** Checks if statistical properties are constant over time using ADF and KPSS tests.
+7.  **Autocorrelation and Memory:** Measures how much the current value depends on past values and estimates the "memory depth".
+8.  **Structural Breaks:** Detects points where the statistical properties of the sequence change abruptly.
+9.  **Anomalies:** Finds outliers by value and sharp breaks in shape (local "spikes").
+10. **Entropy Analysis:** Measures complexity and predictability using Shannon and sample entropy.
+11. **Stream Structure:** Checks for interleaved, independent subsequences (e.g., `a, b, c, a, b, c, ...`).
 12. **Nonlinear/Fractal Analysis:** Assesses chaotic behavior (Lyapunov exponent) and long-term memory (Hurst exponent).
 13. **Spectral Analysis:** Analyzes frequency components using Fourier and wavelet transforms.
-14. **Pattern Classification:** Assigns a final classification to the sequence based on all metrics.
-15. **Decomposition:** Splits the sequence into trend, seasonal, and residual components.
-16. **Volatility:** Analyzes the magnitude of changes (GARCH models).
-17. **Motif Analysis:** Finds the most frequently recurring subsequences.
-18. **State Segmentation:** Divides the sequence into segments corresponding to different regimes (HMM).
-19. **Complexity Analysis:** Measures complexity based on data compressibility (Lempel-Ziv).
+14. **Pattern Classification:** Assigns a final, high-level classification (e.g., "Exponential Growth", "Stochastic Process") to the sequence based on all metrics.
+15. **Decomposition:** Splits the sequence into trend, seasonal, and residual components using STL.
+16. **Volatility Analysis:** Analyzes the magnitude of changes, including GARCH models for financial-type series.
+17. **Motif Analysis:** Finds the most frequently recurring subsequences (patterns) using the Matrix Profile.
+18. **State Segmentation:** Divides the sequence into segments corresponding to different regimes using Hidden Markov Models (HMM).
+19. **Complexity Analysis:** Measures complexity based on data compressibility (Lempel-Ziv) and approximate entropy.
 20. **Symbolic Analysis:** Converts the sequence into a symbolic representation (SAX) for abstract analysis.
-21. **Empirical Mode Decomposition:** Decomposes a signal into a set of oscillatory components.
-22. **Clustering Segmentation:** Segments the sequence by clustering its subsequences based on shape.
-23. **Number-Theoretic Properties:** Analyzes properties of integers (e.g., percentage of primes).
-24. **Divisibility Properties:** Checks for common divisors.
-25. **Ratio Analysis:** Studies the behavior of the ratio `a(n)/a(n-1)`.
-26. **Simple Recurrence Search:** Looks for relations of the form `a(n) ≈ C * a(n-k)`.
-27. **Hybrid Model Analysis:** Searches for models where the generation rule changes cyclically based on the index `n`.
-
+21. **Empirical Mode Decomposition:** Decomposes a non-stationary signal into a set of intrinsic mode functions (IMFs).
+22. **Clustering Segmentation:** Segments the sequence by clustering its subsequences based on their shape (DTW k-Means).
+23. **Number-Theoretic Properties:** Analyzes basic properties of integers (e.g., percentage of primes).
+24. **Divisibility Properties:** Checks for common divisors among the sequence elements.
+25. **Ratio Analysis:** Studies the behavior of the ratio `a(n)/a(n-1)` to identify constant or functional growth factors.
+26. **Simple Recurrence Search:** Searches for simple multiplicative relations of the form `a(n) ≈ C * a(n-k)`.
+27. **Hybrid Model Analysis:** Searches for models where the generation rule changes cyclically based on the index `n % k`.
+28. **Advanced Number-Theoretic Properties:** Checks for a robust greatest common divisor (GCD) and whether the sequence consists of perfect powers (squares, cubes, etc.), ignoring prefixes.
+29. **Benford's Law Analysis:** Checks if the distribution of first significant digits conforms to Benford's Law, which is often used to distinguish natural from artificial data.
+30. **P-Recursive (Holonomic) Analysis:** Searches for exact recurrence relations with polynomial coefficients, e.g., `(n+1)*a(n+1) - (2*n+1)*a(n) = 0`.
+31. **Nonlinear Recurrence Analysis:** Attempts to find polynomial relationships between a term and its predecessors, e.g., `a(n) = a(n-1)^2 - a(n-2)`.
+    
 ## Usage Example
 
 ```python
