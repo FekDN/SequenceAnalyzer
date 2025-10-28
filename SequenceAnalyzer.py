@@ -1734,6 +1734,426 @@ def local_formula_analysis(seq: np.ndarray, max_offset: int = 15, error_threshol
     }
 
 # ===================================================================
+# 27. Finding the greatest common divisor and finding common roots (perfect power analysis)
+# ===================================================================
+import math
+
+def _is_perfect_power(n: int, k: int) -> Tuple[bool, Optional[int]]:
+    """(Helper) Robustly checks if n is a perfect k-th power."""
+    if n < 1 or k < 2:
+        return False, None
+    
+    # Use integer-based root finding to avoid float precision errors with large numbers
+    root = int(round(n**(1/k)))
+    
+    # Check for both sides of the rounding to be sure
+    if (root + 1)**k == n:
+        return True, root + 1
+    if root**k == n:
+        return True, root
+    if (root - 1)**k == n and root > 1:
+        return True, root - 1
+        
+    return False, None
+
+def _find_robust_gcd(seq: np.ndarray) -> int:
+    """(Helper) Finds the GCD of the tail of a sequence to be robust to prefixes."""
+    if len(seq) < 2:
+        return 1
+    
+    # Analyze the last 80% of the sequence, but at least 5 elements
+    # This handles "additive" prefixes that don't follow the main rule
+    start_index = max(0, len(seq) - max(5, int(len(seq) * 0.8)))
+    subset = seq[start_index:]
+    
+    if len(subset) == 0:
+        return 1
+        
+    # Iteratively compute GCD for the subset
+    result_gcd = subset[0]
+    for i in range(1, len(subset)):
+        result_gcd = math.gcd(result_gcd, subset[i])
+        if result_gcd == 1:
+            return 1 # Optimization
+            
+    return result_gcd
+
+def advanced_number_theory(seq: np.ndarray, threshold: float = 0.9) -> Dict[str, Any]:
+    """
+    Analyzes for deeper number-theoretic properties like a robust GCD
+    and whether the sequence consists of perfect powers (squares, cubes, etc.).
+    This analysis is robust to prefixes that may follow a different pattern.
+    """
+    # This analysis is only valid for integer-like sequences
+    try:
+        # Use Python's arbitrary-precision integers via object array for robustness
+        int_seq = seq.astype(object)
+        if not np.all(seq == int_seq):
+            return {"comment": "Sequence is not purely integer."}
+    except (ValueError, TypeError, OverflowError):
+        return {"comment": "Sequence is not integer-like."}
+
+    n = len(int_seq)
+    if n < 5:
+        return {"comment": "Sequence too short."}
+
+    results = {}
+    
+    # --- 1. Robust GCD Analysis ---
+    # Find the GCD of the tail of the sequence
+    robust_gcd = _find_robust_gcd(np.abs(int_seq[int_seq != 0]))
+    
+    if robust_gcd > 1:
+        # Now, check how many elements of the *entire* sequence this GCD divides
+        divisible_count = np.sum([x % robust_gcd == 0 for x in int_seq])
+        divisible_percentage = divisible_count / n
+        
+        if divisible_percentage >= threshold:
+            results["robust_gcd"] = {
+                "value": int(robust_gcd),
+                "coverage_percentage": float(divisible_percentage * 100)
+            }
+
+    # --- 2. Perfect Power Analysis ---
+    # Define the tail of the sequence to analyze for the dominant pattern
+    start_index = max(0, n - max(5, int(n * 0.8)))
+    subset = [x for x in int_seq[start_index:] if x > 1] # Powers are typically > 1
+    
+    if len(subset) >= 3:
+        # Check for common powers (squares, cubes, etc.)
+        for k in range(2, 7): # Check up to 6th powers
+            power_count = sum(1 for x in subset if _is_perfect_power(x, k)[0])
+            
+            if power_count / len(subset) >= threshold:
+                # We found a dominant power. Now verify it on the whole sequence.
+                total_power_count = sum(1 for x in int_seq if x > 1 and _is_perfect_power(x, k)[0])
+                total_positive_count = sum(1 for x in int_seq if x > 1)
+                
+                coverage = total_power_count / total_positive_count if total_positive_count > 0 else 1.0
+                
+                # Extract the sequence of roots
+                roots_sequence = [_is_perfect_power(x, k)[1] for x in int_seq]
+                
+                results["perfect_power_analysis"] = {
+                    "power": k,
+                    "coverage_percentage": float(coverage * 100),
+                    "roots_sequence": roots_sequence
+                }
+                # Once the lowest dominant power is found (e.g., squares), we stop.
+                # A sequence of 4th powers is also a sequence of squares.
+                break
+
+    return results
+
+# ===================================================================
+# 28. Benford's Law analysis
+# ===================================================================
+def _get_first_digit(n: float) -> int:
+    """(Helper) Extracts the first significant digit of a number."""
+    if n == 0:
+        return 0
+    # Use logarithms for a fast, robust way to find the first digit
+    return int(10**(math.log10(abs(n)) % 1))
+
+def benford_law_analysis(seq: np.ndarray) -> Dict[str, Any]:
+    """
+    Analyzes the conformity of the sequence's first significant digits
+    to Benford's Law using a Chi-squared goodness-of-fit test.
+
+    This test is useful for distinguishing naturally occurring data from
+    artificially generated or constrained data.
+    """
+    # Pre-conditions for a meaningful Benford's Law test
+    if len(seq) < 50:
+        return {"comment": "Sequence too short for a reliable Benford's Law analysis (requires at least 50 points)."}
+    
+    # Filter for positive numbers, as the law applies to them
+    positive_seq = seq[seq > 0]
+    
+    if len(positive_seq) < 30:
+        return {"comment": "Not enough positive data points for analysis."}
+        
+    # The data should span at least two orders of magnitude
+    min_val, max_val = np.min(positive_seq), np.max(positive_seq)
+    orders_of_magnitude = math.log10(max_val) - math.log10(min_val) if min_val > 0 else math.log10(max_val)
+    
+    if orders_of_magnitude < 2:
+        return {"comment": f"Data spans only {orders_of_magnitude:.2f} orders of magnitude. Benford's Law is not applicable."}
+
+    # 1. Get the observed distribution of first digits
+    first_digits = [_get_first_digit(n) for n in positive_seq]
+    observed_counts = np.bincount(first_digits, minlength=10)[1:] # Counts for digits 1-9
+    
+    # 2. Get the expected Benford distribution
+    total_count = len(first_digits)
+    benford_probs = np.array([math.log10(1 + 1/d) for d in range(1, 10)])
+    expected_counts = total_count * benford_probs
+    
+    # 3. Perform the Chi-squared goodness-of-fit test
+    try:
+        # Avoid test failure if an expected count is zero (unlikely here, but good practice)
+        if np.any(expected_counts < 1e-9):
+             return {"comment": "Cannot perform Chi-squared test due to zero expected frequencies."}
+        
+        chi2_stat, p_value = stats.chisquare(f_obs=observed_counts, f_exp=expected_counts)
+
+        # H0 (Null Hypothesis): The observed data follows the Benford distribution.
+        # We fail to reject H0 if p_value is high (e.g., > 0.05).
+        conforms = p_value >= 0.05
+        
+        observed_dist_pct = (observed_counts / total_count * 100).tolist()
+        expected_dist_pct = (benford_probs * 100).tolist()
+
+        return {
+            "conforms_to_benford": bool(conforms),
+            "p_value": float(p_value),
+            "chi2_statistic": float(chi2_stat),
+            "observed_distribution_percent": {d: pct for d, pct in enumerate(observed_dist_pct, 1)},
+            "expected_distribution_percent": {d: pct for d, pct in enumerate(expected_dist_pct, 1)}
+        }
+    except Exception as e:
+        return {"error": f"Benford's Law analysis failed: {e}"}
+
+# ===================================================================
+# 29. P-recursive (holonomic) recurrent dependency
+# ===================================================================
+import sympy as sp
+from sympy.printing.pretty.pretty import pretty_print
+import math
+
+def find_p_recursive_relation(sequence, max_order=3, max_degree=2):
+    """
+    Search for a P-recursive (holonomic) recurrent dependence of the form:
+        p_k(n)*a(n+k) + p_{k-1}(n)*a(n+k-1) + ... + p_0(n)*a(n) = 0,
+    где p_i(n) — polynomials of degree <= max_degree with integer coefficients.
+
+    Args:
+        sequence (list): Initial sequence (a(0), a(1), ...).
+        max_order (int): Maximum order of recurrence (k).
+        max_degree (int): Maximum degree of polynomials p_i(n).
+
+    Returns:
+        dict | None: A dictionary containing the found polynomials, or None if not found.
+    """
+    N = len(sequence)
+    n = sp.Symbol('n', integer=True)
+
+    # Using exact rational numbers for calculations
+    seq_rational = [sp.Rational(x) for x in sequence]
+
+    # Iteration of increasing complexity (s = order + degree)
+    # This ensures that we find the simplest relation first.
+    max_complexity = max_order + max_degree
+    for s in range(1, max_complexity + 1):
+        for k in range(1, min(s, max_order) + 1):
+            deg = s - k
+            if deg > max_degree:
+                continue
+
+            num_coeffs_per_poly = deg + 1
+            total_coeffs = (k + 1) * num_coeffs_per_poly
+
+            # At least as many equations as there are unknowns are required
+            if N - k < total_coeffs:
+                continue
+
+            # Creating symbolic variables for polynomial coefficients
+            c_vars = sp.symbols(f'c_0:{total_coeffs}')
+            
+            polys = []
+            for i in range(k + 1):
+                poly_coeffs = c_vars[i * num_coeffs_per_poly : (i + 1) * num_coeffs_per_poly]
+                polys.append(sum(poly_coeffs[j] * n**j for j in range(num_coeffs_per_poly)))
+
+            # Form a system of linear equations
+            equations = []
+            for ni in range(N - k):
+                expr = sum(polys[i].subs(n, ni) * seq_rational[ni + i] for i in range(k + 1))
+                equations.append(expr)
+            
+            # Solve the system
+            try:
+                # linsolve may return an empty set if there are no solutions.
+                solution_set = sp.linsolve(equations, c_vars)
+                if not solution_set:
+                    continue
+            except Exception:
+                continue # If the solution fails, skip it.
+
+            # Extract the solution. We work only with a single solution.
+            # Skip the case with an infinite number of solutions (underdetermined system).
+            if len(solution_set) == 1:
+                sol = list(solution_set)[0]
+                
+                # Skip the trivial zero solution
+                if all(s == 0 for s in sol):
+                    continue
+                
+                # --- Normalization to the minimum integer solution ---
+                # 1. Find the least-common-number (LCM) of all denominators.
+                denominators = [s.q for s in sol if s != 0]
+                lcm = sp.lcm(denominators) if denominators else 1
+                
+                # 2. Multiply by the LCM to get integers
+                int_sol = [s * lcm for s in sol]
+                
+                # 3. Find the greatest common multiple to simplify.
+                common_divisor = sp.gcd(int_sol) if int_sol else 1
+                
+                # 4. Obtain the minimal integer solution
+                final_coeffs = [s / common_divisor for s in int_sol]
+
+                # Collect the found polynomials
+                found_polys = []
+                for i in range(k + 1):
+                    poly_coeffs = final_coeffs[i * num_coeffs_per_poly : (i + 1) * num_coeffs_per_poly]
+                    p = sum(poly_coeffs[j] * n**j for j in range(num_coeffs_per_poly))
+                    found_polys.append(sp.simplify(p))
+
+                # Final accuracy check
+                is_valid = all(
+                    sp.simplify(sum(found_polys[i].subs(n, ni) * seq_rational[ni + i] for i in range(k + 1))) == 0
+                    for ni in range(N - k)
+                )
+
+                if is_valid:
+                    relation = sum(found_polys[i] * sp.Function('a')(n + i) for i in range(k + 1))
+                    print(f"P-recursivity found (k={k}, degree={deg}):")
+                    pretty_print(sp.Eq(relation, 0))
+                    
+                    return {
+                        "order": k,
+                        "degree": deg,
+                        "polynomials_str": [str(p) for p in found_polys],
+                        "relation_str": str(sp.Eq(relation, 0)),
+                        "relation_sympy": sp.Eq(relation, 0)
+                    }
+
+    print("No P-recursive relations were found within the given limits.")
+    return None
+
+
+# ===================================================================
+# 30. Nonlinear recurrence analysis
+# ===================================================================
+try:
+    from sklearn.linear_model import Lasso
+    from sklearn.exceptions import ConvergenceWarning
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    print("Warning: scikit-learn library not found. Nonlinear recurrence analysis will be unavailable.")
+    print("Install it via 'pip install scikit-learn' for this feature.")
+    class ConvergenceWarning(Warning): pass
+
+
+def nonlinear_recurrence_analysis(seq: np.ndarray, max_order: int = 2, max_degree: int = 2, use_log: bool = False) -> Dict[str, Any]:
+    """
+    Finds a nonlinear recurrence relationship of the form:
+        a(n) = F(a(n-1), a(n-2), ..., a(n-k))
+    where F is a polynomial of degree up to max_degree.
+    Uses Lasso (L1) regression to find the simplest (sparse) formula and avoid overfitting.
+    """
+    if not SKLEARN_AVAILABLE:
+        return {"comment": "scikit-learn library is not available."}
+        
+    n = len(seq)
+    if n < 20:
+        return {"comment": "Sequence too short for nonlinear analysis."}
+        
+    # Handle log transformation for multiplicative patterns
+    target_seq = seq
+    if use_log:
+        if np.any(seq <= 1e-9): # Allow zero, but not negative
+            return {"comment": "Log mode is not applicable to sequences with negative values."}
+        target_seq = np.log(seq + 1e-9) # Add epsilon for stability
+
+    best_model = None
+    best_mse_ratio = float('inf')
+
+    # Iterate through increasing order (memory depth)
+    for k in range(1, max_order + 1):
+        if n - k < 10: continue
+
+        # Generate all monomial exponents.
+        # Example for k=2, deg=2: (1,0), (2,0), (0,1), (0,2), (1,1) -> a(n-1), a(n-1)^2, a(n-2), a(n-2)^2, a(n-1)a(n-2)
+        exponents = [
+            e for e in itertools.product(range(max_degree + 1), repeat=k)
+            if 0 < sum(e) <= max_degree
+        ]
+        
+        # --- Overfitting Guard ---
+        # Heuristic: require at least 2 data points per potential feature
+        if n - k < len(exponents) * 2:
+            continue
+
+        # Build the feature matrix X and target vector y
+        X = []
+        y = target_seq[k:]
+        
+        for i in range(k, n):
+            # History window: [a(n-1), a(n-2), ..., a(n-k)]
+            prev_terms = target_seq[i-k:i][::-1]
+            features = [np.prod(prev_terms ** exp) for exp in exponents]
+            X.append(features)
+        
+        X = np.array(X)
+        
+        # Use Lasso regression to find a sparse solution
+        # Alpha is the regularization strength. Small alpha encourages sparsity.
+        model = Lasso(alpha=1e-3, fit_intercept=True, max_iter=10000, tol=1e-4)
+        
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConvergenceWarning)
+            model.fit(X, y)
+        
+        preds = model.predict(X)
+        mse = np.mean((y - preds)**2)
+        
+        # Normalize error against the variance of the target sequence
+        target_variance = np.var(y)
+        if target_variance < 1e-9: continue
+        mse_ratio = mse / target_variance
+
+        if mse_ratio < best_mse_ratio:
+            best_mse_ratio = mse_ratio
+            best_model = {
+                "order": k,
+                "degree": max_degree,
+                "coefficients": np.concatenate(([model.intercept_], model.coef_)),
+                "exponents": exponents,
+                "mse_ratio": mse_ratio,
+                "log_mode": use_log,
+            }
+            
+    # --- Interpretation and Result Formatting ---
+    if best_model is None or best_model['mse_ratio'] > 0.01: # Only accept high-quality fits
+        return {"comment": "No simple nonlinear recurrence found with low error."}
+
+    # Reconstruct the symbolic formula for the best model found
+    k = best_model['order']
+    coeffs = best_model['coefficients']
+    exponents = best_model['exponents']
+    
+    # Create symbolic variables a(n-1), a(n-2), ...
+    # Using 'x' for cleaner display
+    vars_sym = sp.symbols(f'x_1:{k+1}') 
+    
+    # Build the expression, rounding coefficients for readability
+    expr = sp.N(coeffs[0], 4) 
+    for i, exp in enumerate(exponents):
+        coeff = coeffs[i + 1]
+        if abs(coeff) > 1e-5: # Only include non-zero terms
+            term = sp.N(coeff, 4)
+            for j in range(k):
+                if exp[j] > 0:
+                    term *= vars_sym[j]**exp[j]
+            expr += term
+    
+    best_model['expression_str'] = str(expr)
+    return best_model
+
+# ===================================================================
 # MAIN FUNCTION
 # ===================================================================
 def analyze_sequence_full(seq: List[float], is_sub_stream: bool = False) -> Dict[str, Any]:
@@ -1791,7 +2211,11 @@ def analyze_sequence_full(seq: List[float], is_sub_stream: bool = False) -> Dict
         "number_theoretic_properties": number_theoretic_properties, 
         "ratio_analysis": analyze_ratios,
         "divisibility_properties": divisibility_properties,
-        "simple_recurrence": simple_recurrence_analysis
+        "simple_recurrence": simple_recurrence_analysis,
+        "benford_law": benford_law_analysis,
+        "p_recursive_relation": find_p_recursive_relation,
+        "nonlinear_recurrence": nonlinear_recurrence_analysis,
+        "advanced_number_theory": advanced_number_theory
     }
 
     # List of all functions that require float64 due to dependencies on external libraries
@@ -1811,6 +2235,8 @@ def analyze_sequence_full(seq: List[float], is_sub_stream: bool = False) -> Dict
         "nonlinear_fractal_analysis",
         "entropy_analysis",
         "complexity_analysis",
+        "benford_law",
+        "nonlinear_recurrence"
     }
     
     # Intelligent data version selection and feature skipping during overflow
@@ -2188,20 +2614,20 @@ def interpret_analysis_results(meta: Dict[str, Any], sequence_is_integer_like: b
 
 if __name__ == "__main__":
    
-    #sequence = [
-    #    0, 1, 3, 6, 2, 7, 13, 20, 12, 21, 11, 22, 10, 23, 9, 24, 8, 25, 43, 62, 42, 
-    #    63, 41, 18, 42, 17, 43, 16, 44, 15, 45, 14, 46, 79, 113, 78, 114, 77, 39, 
-    #    78, 38, 79, 37, 80, 36, 81, 35, 82, 34, 83, 33, 84, 32, 85, 31, 86, 30, 87, 
-    #    29, 88, 28, 89, 27, 90, 26, 91
-    #] # A005132 Recaman's sequence): a(0) = 0; for n > 0, a(n) = a(n-1) - n if nonnegative and not already in the sequence, otherwise a(n) = a(n-1) + n.
-    #sequence = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79] # A000040 The prime numbers.
+    sequence = [
+        0, 1, 3, 6, 2, 7, 13, 20, 12, 21, 11, 22, 10, 23, 9, 24, 8, 25, 43, 62, 42, 
+        63, 41, 18, 42, 17, 43, 16, 44, 15, 45, 14, 46, 79, 113, 78, 114, 77, 39, 
+        78, 38, 79, 37, 80, 36, 81, 35, 82, 34, 83, 33, 84, 32, 85, 31, 86, 30, 87, 
+        29, 88, 28, 89, 27, 90, 26, 91
+    ] # A005132 Recaman's sequence): a(0) = 0; for n > 0, a(n) = a(n-1) - n if nonnegative and not already in the sequence, otherwise a(n) = a(n-1) + n.
+    sequence = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79] # A000040 The prime numbers.
     #sequence = [0, 1, 8, 27, 64, 125, 216, 343, 512, 729, 1000, 1331, 1728, 2197, 2744, 3375, 4096, 4913, 5832, 6859, 8000, 9261, 10648, 12167, 13824, 15625, 17576, 19683] # A000578 The cubes: a(n) = n^3.
     #sequence = [0, 1, 4, 9, 16, 25, 36, 49, 64, 81, 100, 121, 144, 169, 196, 225, 256, 289, 324, 361, 400, 441, 484, 529, 576, 625, 676] # A000290 The squares: a(n) = n^2.
     #sequence = [0, 1, 5, 19, 65, 211, 665, 2059, 6305, 19171, 58025, 175099, 527345, 1586131, 4766585, 14316139, 42981185, 129009091, 387158345, 1161737179, 3485735825, 10458256051] # A001047 a(n) = 3^n - 2^n.
     #sequence = [1, 1, 2, 5, 14, 42, 132, 429, 1430, 4862, 16796, 58786, 208012, 742900, 2674440, 9694845, 35357670, 129644790, 477638700] # A000108 Catalan numbers: C(n) = binomial(2n,n)/(n+1) = (2n)!/(n!(n+1)!).
     #sequence = [1, 6, 90, 1680, 34650, 756756, 17153136, 399072960, 9465511770, 227873431500, 5550996791340, 136526995463040, 3384731762521200, 84478098072866400, 2120572665910728000, 53494979785374631680, 1355345464406015082330] # A006480 De Bruijn's S(3,n): (3n)!/(n!)^3.
     #sequence = [1, 0, 1, 0, 2, 0, 5, 0, 14, 0, 42, 0, 132, 0, 429, 0, 1430, 0, 4862, 0, 16796, 0, 58786, 0, 208012, 0, 742900, 0, 2674440, 0, 9694845, 0, 35357670] # A126120 Catalan numbers (A000108) interpolated with 0's.
-    sequence = [2, 1, 3, 4, 7, 11, 18, 29, 47, 76, 123, 199, 322] # A000032 Lucas numbers beginning at 2: L(n) = L(n-1) + L(n-2), L(0) = 2, L(1) = 1.
+    #sequence = [2, 1, 3, 4, 7, 11, 18, 29, 47, 76, 123, 199, 322] # A000032 Lucas numbers beginning at 2: L(n) = L(n-1) + L(n-2), L(0) = 2, L(1) = 1.
     try:
         # Check that the input is an iterable and not a single number
         if not hasattr(sequence, '__iter__'):
