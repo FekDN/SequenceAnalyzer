@@ -17,7 +17,7 @@ The tool is suitable for analyzing time series and investigating mathematical se
 For full functionality, install all dependencies with a single command:
 
 ```bash
-pip install numpy scipy statsmodels PyWavelets ruptures nolds stumpy hmmlearn scikit-learn arch pyts EMD-signal tslearn
+pip install numpy scipy statsmodels PyWavelets ruptures nolds stumpy sympy hmmlearn scikit-learn arch pyts EMD-signal tslearn
 ```
 
 ---
