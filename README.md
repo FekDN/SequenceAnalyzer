@@ -78,6 +78,30 @@ pretty_print_report("Interpretation of Analysis Results", interpreted_report)
 
 ---
 
+The analyzer uses a variety of methods, each with its own data requirements. Generally, the more complex the pattern a method seeks, the more data it needs to produce a reliable result.
+
+Here is a brief guide to the recommended minimum sequence lengths for different types of analysis:
+
+*   **1. Foundational Metrics (5-15+ terms):**
+    *   **Functions:** `local_dynamics (5)`, `statistical_moments (2)`, `dependency_model (polynomials, 5-10)`, `anomalies (4)`.
+    *   **Why:** This is enough data to calculate basic moments (mean, variance), derivatives (velocity, acceleration), and fit simple curves. These concepts are not meaningful on fewer points.
+
+*   **2. Core Time Series Analysis (20-40+ terms):**
+    *   **Functions:** `stationarity (20)`, `cyclicity_and_seasonality (approx. 20-30)`, `entropy_analysis (20)`, `spectral_analysis (20)`, `structural_breaks (20)`, `complexity_analysis (20)`, `stream_structure_analysis (30)`, `state_segmentation (HMM, ~36)`.
+    *   **Why:** These methods need sufficient data to establish a "statistical regime." Stationarity tests must distinguish trends from noise, cycle detection needs to see at least one or two full periods, and HMM needs enough samples to learn the characteristics of each hidden state.
+
+*   **3. Advanced & Structural Analysis (50+ terms):**
+    *   **Functions:** `nonlinear_fractal_analysis (Hurst/DFA, 50)`, `volatility_analysis (GARCH, 50)`, `empirical_mode_decomposition (50)`, `hybrid_model_analysis (50)`.
+    *   **Why:** These methods model more complex properties. GARCH analyzes the volatility of returns, fractal analysis investigates self-similarity and scaling properties, and EMD decomposes the signal into nested oscillatory modes—all of which require a longer data history to be reliable.
+
+*   **4. Highly Demanding (Chaos & Attractor) Analysis (100+ terms):**
+    *   **Functions:** `nonlinear_fractal_analysis (Correlation Dimension/Lyapunov Exponent, 100)`.
+    *   **Why:** These methods attempt to reconstruct a system's attractor in phase space from a single time series. This is an extremely data-hungry task, and results on shorter sequences would be statistically insignificant.
+
+In general, longer sequences yield more reliable and insightful results, especially for the advanced methods.
+
+---
+
 *   feklindn@gmail.com 
 
 ---
