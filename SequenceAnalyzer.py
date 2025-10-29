@@ -7,6 +7,7 @@ from scipy.optimize import curve_fit
 from scipy.signal import detrend, periodogram, find_peaks
 from scipy.special import gammaln
 from typing import List, Dict, Any, Tuple, Optional
+import itertools
 
 import warnings
 
