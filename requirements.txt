@@ -1,0 +1,19 @@
+numpy
+scipy
+pandas
+statsmodels
+
+# Time series and signal analysis
+PyWavelets
+ruptures
+nolds
+stumpy
+hmmlearn
+scikit-learn
+arch
+pyts
+EMD-signal
+tslearn
+
+# Symbolic computing
+sympy
